@@ -2,6 +2,9 @@ const path = require('path')
 const http = require('http')
 const express = require('express')
 const socketio = require('socket.io')
+const Filter = require('bad-words')
+const { generateMessage, generateLocationMessage } = require('./utils/messages')
+const { addUser, removeUser, getUser, getUsersInRoom } = require('./utils/users')
 
 const app = express()
 const server = http.createServer(app)
@@ -12,21 +15,63 @@ const publicDirectoryPath = path.join(__dirname, '../public')
 
 app.use(express.static(publicDirectoryPath))
 
-let count = 0
-
 io.on('connection', (socket) => {
     console.log('New WebSocket connection')
 
-    socket.emit('countUpdated', count)
+    // socket.emit('message', generateMessage('Welcome!'))
+    // socket.broadcast.emit('message', generateMessage('A new user has joined!'))
     
-    socket.on('increment', () => {
-        count++
-        
-        // Emit to a single connection 
-        // socket.emit('countUpdated', count)
+    socket.on('join', ({ username, room }, callback) => {
+        const { error, user } = addUser({ id: socket.id, username, room })
 
-        // Emit to every single connected connections
-        io.emit('countUpdated', count)
+        if (error) {
+            return callback(error)
+        }
+
+        socket.join(user.room)
+        socket.emit('message', generateMessage('Admin', 'Welcome!'))
+        socket.broadcast.to(user.room).emit('message', generateMessage('Admin', `${user.username} has joined!`))
+        io.to(user.room).emit('roomData', {
+            room: user.room,
+            users: getUsersInRoom(user.room)
+        })
+
+        callback()
+    })
+
+    socket.on('sendMessage', (message, callback) => {
+        const user = getUser(socket.id)
+        console.log('getUser')
+        console.log(user)
+        const filter = new Filter()
+
+        if (filter.isProfane(message)) {
+            return callback('Profanity is not allowed!')
+        }
+
+        io.to(user.room).emit('message', generateMessage(user.username, message))
+        callback()
+    })
+
+    socket.on('sendLocation', (coords, callback) => {
+        const user = getUser(socket.id)
+        io.to(user.room).emit('locationMessage', generateLocationMessage(user.username, `https://google.com/maps?q=${coords.latitude}, ${coords.longitude}`))
+        callback()
+    })
+
+    socket.on('disconnect', () => {
+        const user = removeUser(socket.id)
+        const room = user.room
+        const username = user.username
+
+        if (user) {
+            io.to(room).emit('message', generateMessage(username, `${username} has left!`))
+            io.to(room).emit('roomData', {
+                room: room,
+                users: getUsersInRoom(room)
+            })
+        }
+
     })
 
 })
